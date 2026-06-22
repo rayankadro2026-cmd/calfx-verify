@@ -199,6 +199,12 @@ async function getDiscordUser(accessToken) {
   });
 }
 
+async function getGuildMember(config, userId) {
+  return discordRequest(`/guilds/${config.guildId}/members/${userId}`, {
+    headers: { Authorization: `Bot ${config.botToken}` }
+  });
+}
+
 async function addGuildRole(config, userId, roleId) {
   await discordRequest(`/guilds/${config.guildId}/members/${userId}/roles/${roleId}`, {
     method: "PUT",
@@ -259,11 +265,29 @@ app.get("/callback", async (req, res) => {
     const token = await exchangeCodeForToken(config, String(code));
     const user = await getDiscordUser(token.access_token);
 
+    try {
+      await getGuildMember(config, user.id);
+    } catch (error) {
+      if (String(error.message || "").includes("(404)")) {
+        return sendHtml(res, htmlPage("Verification Failed", `
+          <h1>Verification Failed</h1>
+          <p>You need to join the CALFX Discord server before verifying.</p>
+          <a class="button" href="/start">Try Again</a>
+        `, 400));
+      }
+
+      throw error;
+    }
+
     await removeGuildRole(config, user.id, config.unverifiedRoleId).catch(error => {
       console.warn(`Could not remove unverified role from ${user.id}:`, error.message);
     });
-    await addGuildRole(config, user.id, config.verifiedRoleId);
-    await addGuildRole(config, user.id, config.memberRoleId);
+    await addGuildRole(config, user.id, config.verifiedRoleId).catch(error => {
+      throw new Error(`Could not add the verified role. Check the bot has Manage Roles and its role is above the verified role. Discord said: ${error.message}`);
+    });
+    await addGuildRole(config, user.id, config.memberRoleId).catch(error => {
+      throw new Error(`Could not add the CALFX Member role. Check the bot has Manage Roles and its role is above the member role. Discord said: ${error.message}`);
+    });
 
     return sendHtml(res, htmlPage("Verified", `
       <h1>Verification Complete</h1>
