@@ -49,7 +49,12 @@ function getRequestBaseUrl(req) {
 }
 
 function getConfig(req) {
-  const publicBaseUrl = normalizeBaseUrl(env("PUBLIC_BASE_URL", getRequestBaseUrl(req)), "PUBLIC_BASE_URL");
+  const fallbackBaseUrl = env("VERCEL_PROJECT_PRODUCTION_URL")
+    ? `https://${env("VERCEL_PROJECT_PRODUCTION_URL")}`
+    : env("VERCEL_URL")
+      ? `https://${env("VERCEL_URL")}`
+      : getRequestBaseUrl(req);
+  const publicBaseUrl = normalizeBaseUrl(env("PUBLIC_BASE_URL", fallbackBaseUrl), "PUBLIC_BASE_URL");
   if (!publicBaseUrl) throw new Error("Missing required environment variable: PUBLIC_BASE_URL");
   const redirectUri = `${publicBaseUrl}/callback`;
 
@@ -82,30 +87,49 @@ function signState(config, payload) {
     .digest("base64url");
 }
 
+function encodeStatePayload(data) {
+  return Buffer.from(JSON.stringify(data)).toString("base64url");
+}
+
+function decodeStatePayload(payload) {
+  return JSON.parse(Buffer.from(payload, "base64url").toString("utf8"));
+}
+
 function createOAuthState(config) {
-  const issuedAt = Date.now().toString(36);
-  const nonce = crypto.randomBytes(18).toString("base64url");
-  const payload = `${issuedAt}.${nonce}`;
+  const payload = encodeStatePayload({
+    issuedAt: Date.now(),
+    nonce: crypto.randomBytes(18).toString("base64url"),
+    redirectUri: config.redirectUri
+  });
+
   return `${payload}.${signState(config, payload)}`;
 }
 
-function isValidOAuthState(config, state) {
+function readOAuthState(config, state) {
   const parts = String(state || "").split(".");
-  if (parts.length !== 3) return false;
+  if (parts.length !== 2) return null;
 
-  const [issuedAt, nonce, signature] = parts;
-  const issuedAtMs = Number.parseInt(issuedAt, 36);
-  const ageMs = Date.now() - issuedAtMs;
-
-  if (!Number.isFinite(issuedAtMs) || ageMs < -60_000 || ageMs > STATE_MAX_AGE_MS) {
-    return false;
-  }
-
-  const expected = signState(config, `${issuedAt}.${nonce}`);
+  const [payload, signature] = parts;
+  const expected = signState(config, payload);
   const expectedBuffer = Buffer.from(expected);
   const actualBuffer = Buffer.from(signature);
 
-  return expectedBuffer.length === actualBuffer.length && crypto.timingSafeEqual(expectedBuffer, actualBuffer);
+  if (expectedBuffer.length !== actualBuffer.length || !crypto.timingSafeEqual(expectedBuffer, actualBuffer)) {
+    return null;
+  }
+
+  try {
+    const data = decodeStatePayload(payload);
+    const ageMs = Date.now() - Number(data.issuedAt);
+
+    if (!Number.isFinite(ageMs) || ageMs < -60_000 || ageMs > STATE_MAX_AGE_MS) {
+      return null;
+    }
+
+    return data;
+  } catch {
+    return null;
+  }
 }
 
 function htmlPage(title, body, status = 200) {
@@ -214,6 +238,15 @@ function retryButtonFromRequest(req) {
   return `<a class="button" href="${escapeHtml(href)}">Try Again</a>`;
 }
 
+function setupList(config) {
+  return `
+    <p>Use these exact values:</p>
+    <p><strong>Bot Verify URL</strong><br><code>${escapeHtml(config.publicBaseUrl)}/start</code></p>
+    <p><strong>Discord OAuth2 Redirect</strong><br><code>${escapeHtml(config.redirectUri)}</code></p>
+    <p>In Discord Developer Portal, paste the redirect URL exactly under <strong>OAuth2 - Redirects</strong>.</p>
+  `;
+}
+
 async function discordRequest(path, options = {}) {
   const response = await fetch(`${DISCORD_API}${path}`, options);
   const text = await response.text();
@@ -287,6 +320,22 @@ app.get("/", (req, res) => {
   res.redirect("/start");
 });
 
+app.get("/setup", (req, res) => {
+  try {
+    const config = getConfig(req);
+    return sendHtml(res, htmlPage("CALFX Verification Setup", `
+      <h1>Verification Setup</h1>
+      ${setupList(config)}
+      <a class="button" href="${escapeHtml(config.publicBaseUrl)}/start">Test Verification</a>
+    `));
+  } catch (error) {
+    return sendHtml(res, htmlPage("Verification Setup Needed", `
+      <h1>Verification Setup Needed</h1>
+      <p>${escapeHtml(error.message || error)}</p>
+    `, 500));
+  }
+});
+
 app.get("/start", (req, res) => {
   try {
     const config = getConfig(req);
@@ -324,7 +373,11 @@ app.get("/callback", async (req, res) => {
       `, 400));
     }
 
-    if (!state || !isValidOAuthState(config, state)) {
+    const stateData = readOAuthState(config, state);
+
+    if (stateData?.redirectUri) {
+      config.redirectUri = stateData.redirectUri;
+    } else {
       console.warn("OAuth state was missing or invalid. Continuing because Discord returned a valid authorization code.");
     }
 
