@@ -5,12 +5,21 @@ const DISCORD_API = "https://discord.com/api/v10";
 const STATE_MAX_AGE_MS = 10 * 60 * 1000;
 
 function env(name, fallback = "") {
-  return process.env[name] || fallback;
+  const value = process.env[name] || fallback;
+  return String(value || "").trim().replace(/^["']|["']$/g, "");
 }
 
 function requiredEnv(name) {
   const value = env(name);
   if (!value) throw new Error(`Missing required environment variable: ${name}`);
+  return value;
+}
+
+function requiredSnowflakeEnv(name) {
+  const value = requiredEnv(name);
+  if (!/^\d{17,20}$/.test(value)) {
+    throw new Error(`${name} must be a Discord ID containing only numbers. Current value starts with: ${value.slice(0, 12)}`);
+  }
   return value;
 }
 
@@ -25,13 +34,13 @@ function getConfig(req) {
   if (!publicBaseUrl) throw new Error("Missing required environment variable: PUBLIC_BASE_URL");
 
   return {
-    clientId: requiredEnv("DISCORD_CLIENT_ID"),
+    clientId: requiredSnowflakeEnv("DISCORD_CLIENT_ID"),
     clientSecret: requiredEnv("DISCORD_CLIENT_SECRET"),
     botToken: requiredEnv("DISCORD_BOT_TOKEN"),
-    guildId: requiredEnv("DISCORD_GUILD_ID"),
-    unverifiedRoleId: requiredEnv("UNVERIFIED_ROLE_ID"),
-    verifiedRoleId: requiredEnv("VERIFIED_ROLE_ID"),
-    memberRoleId: requiredEnv("MEMBER_ROLE_ID"),
+    guildId: requiredSnowflakeEnv("DISCORD_GUILD_ID"),
+    unverifiedRoleId: requiredSnowflakeEnv("UNVERIFIED_ROLE_ID"),
+    verifiedRoleId: requiredSnowflakeEnv("VERIFIED_ROLE_ID"),
+    memberRoleId: requiredSnowflakeEnv("MEMBER_ROLE_ID"),
     redirectUri: env("DISCORD_REDIRECT_URI", `${publicBaseUrl}/callback`),
     publicBaseUrl
   };
@@ -184,11 +193,20 @@ function retryButtonFromRequest(req) {
 async function discordRequest(path, options = {}) {
   const response = await fetch(`${DISCORD_API}${path}`, options);
   const text = await response.text();
-  const data = text ? JSON.parse(text) : null;
+  let data = null;
+
+  try {
+    data = text ? JSON.parse(text) : null;
+  } catch {
+    data = text || null;
+  }
 
   if (!response.ok) {
+    const details = data && typeof data === "object" && data.errors
+      ? ` Details: ${JSON.stringify(data.errors).slice(0, 800)}`
+      : "";
     const message = data?.message || response.statusText || "Discord API request failed";
-    throw new Error(`${message} (${response.status})`);
+    throw new Error(`${message} (${response.status})${details}`);
   }
 
   return data;
