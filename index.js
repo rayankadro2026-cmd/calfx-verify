@@ -23,6 +23,25 @@ function requiredSnowflakeEnv(name) {
   return value;
 }
 
+function normalizeBaseUrl(value, label) {
+  let raw = String(value || "").trim().replace(/^["']|["']$/g, "");
+  raw = raw.replace(/^https\/\//i, "https://").replace(/^http\/\//i, "http://");
+
+  if (raw && !/^https?:\/\//i.test(raw)) {
+    raw = `https://${raw}`;
+  }
+
+  try {
+    const url = new URL(raw);
+    if (!["http:", "https:"].includes(url.protocol) || !url.hostname) {
+      throw new Error("invalid URL");
+    }
+    return url.origin.replace(/\/+$/, "");
+  } catch {
+    throw new Error(`${label} must be a valid URL like https://calfx-verify.vercel.app`);
+  }
+}
+
 function getRequestBaseUrl(req) {
   const proto = req.headers["x-forwarded-proto"] || req.protocol || "https";
   const host = req.headers["x-forwarded-host"] || req.headers.host || "";
@@ -30,8 +49,9 @@ function getRequestBaseUrl(req) {
 }
 
 function getConfig(req) {
-  const publicBaseUrl = env("PUBLIC_BASE_URL", getRequestBaseUrl(req)).replace(/\/+$/, "");
+  const publicBaseUrl = normalizeBaseUrl(env("PUBLIC_BASE_URL", getRequestBaseUrl(req)), "PUBLIC_BASE_URL");
   if (!publicBaseUrl) throw new Error("Missing required environment variable: PUBLIC_BASE_URL");
+  const redirectUri = `${publicBaseUrl}/callback`;
 
   return {
     clientId: requiredSnowflakeEnv("DISCORD_CLIENT_ID"),
@@ -41,7 +61,7 @@ function getConfig(req) {
     unverifiedRoleId: requiredSnowflakeEnv("UNVERIFIED_ROLE_ID"),
     verifiedRoleId: requiredSnowflakeEnv("VERIFIED_ROLE_ID"),
     memberRoleId: requiredSnowflakeEnv("MEMBER_ROLE_ID"),
-    redirectUri: env("DISCORD_REDIRECT_URI", `${publicBaseUrl}/callback`),
+    redirectUri,
     publicBaseUrl
   };
 }
@@ -185,8 +205,12 @@ function retryButton(config) {
 }
 
 function retryButtonFromRequest(req) {
-  const publicBaseUrl = env("PUBLIC_BASE_URL", getRequestBaseUrl(req)).replace(/\/+$/, "");
-  const href = publicBaseUrl ? `${publicBaseUrl}/start` : "/start";
+  let href = "/start";
+
+  try {
+    href = `${normalizeBaseUrl(env("PUBLIC_BASE_URL", getRequestBaseUrl(req)), "PUBLIC_BASE_URL")}/start`;
+  } catch {}
+
   return `<a class="button" href="${escapeHtml(href)}">Try Again</a>`;
 }
 
@@ -205,7 +229,10 @@ async function discordRequest(path, options = {}) {
     const details = data && typeof data === "object" && data.errors
       ? ` Details: ${JSON.stringify(data.errors).slice(0, 800)}`
       : "";
-    const message = data?.message || response.statusText || "Discord API request failed";
+    const apiError = data && typeof data === "object"
+      ? data.error_description || data.error || data.message
+      : data;
+    const message = apiError || response.statusText || "Discord API request failed";
     throw new Error(`${message} (${response.status})${details}`);
   }
 
