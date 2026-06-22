@@ -31,6 +31,8 @@ DISCORD_GUILD_ID=your_server_id
 UNVERIFIED_ROLE_ID=1498362369053556968
 VERIFIED_ROLE_ID=your_verified_role_id
 MEMBER_ROLE_ID=1498355879387332648
+ROBLOX_CLIENT_ID=your_roblox_oauth_client_id
+ROBLOX_CLIENT_SECRET=your_roblox_oauth_client_secret
 ```
 
 ## Discord Developer Portal
@@ -47,11 +49,40 @@ You can open this page after deployment to see the exact values:
 https://YOUR_VERCEL_PROJECT.vercel.app/setup
 ```
 
+The setup page also shows the Roblox OAuth redirect URL:
+
+```txt
+https://YOUR_VERCEL_PROJECT.vercel.app/roblox/callback
+```
+
 The OAuth scope is:
 
 ```txt
 identify
 ```
+
+## Roblox Creator Dashboard
+
+Create an OAuth app, add the `openid` and `profile` identity scopes, then add this exact redirect URL:
+
+```txt
+https://YOUR_VERCEL_PROJECT.vercel.app/roblox/callback
+```
+
+Use these URLs if Roblox asks for app links:
+
+```txt
+Entry Link:
+https://YOUR_VERCEL_PROJECT.vercel.app
+
+Privacy Policy URL:
+https://YOUR_VERCEL_PROJECT.vercel.app/privacy
+
+Terms of Service URL:
+https://YOUR_VERCEL_PROJECT.vercel.app/terms
+```
+
+Put the Roblox OAuth client ID and secret into Vercel as `ROBLOX_CLIENT_ID` and `ROBLOX_CLIENT_SECRET`. If those two variables are not set, the site will still complete Discord verification without Roblox.
 
 ## Bot Hosting Setting
 
@@ -73,11 +104,13 @@ The bot must have:
 - Bot role above Unverified role
 - Bot role above Verified role
 - Bot role above CALFX Member role
+- Manage Nicknames, if you want the bot to rename members to their Roblox username
 
 Do not share:
 
 - `DISCORD_BOT_TOKEN`
 - `DISCORD_CLIENT_SECRET`
+- `ROBLOX_CLIENT_SECRET`
 
 ## Local Test
 
