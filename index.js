@@ -2,8 +2,7 @@ const crypto = require("crypto");
 const express = require("express");
 
 const DISCORD_API = "https://discord.com/api/v10";
-const COOKIE_NAME = "calfx_verify_state";
-const COOKIE_MAX_AGE_SECONDS = 10 * 60;
+const STATE_MAX_AGE_MS = 10 * 60 * 1000;
 
 function env(name, fallback = "") {
   return process.env[name] || fallback;
@@ -31,38 +30,6 @@ function getConfig() {
   };
 }
 
-function parseCookies(req) {
-  const header = req.headers.cookie || "";
-  return Object.fromEntries(
-    header
-      .split(";")
-      .map(cookie => cookie.trim())
-      .filter(Boolean)
-      .map(cookie => {
-        const index = cookie.indexOf("=");
-        if (index === -1) return [cookie, ""];
-        return [
-          decodeURIComponent(cookie.slice(0, index)),
-          decodeURIComponent(cookie.slice(index + 1))
-        ];
-      })
-  );
-}
-
-function setStateCookie(res, state) {
-  res.setHeader(
-    "Set-Cookie",
-    `${COOKIE_NAME}=${encodeURIComponent(state)}; Max-Age=${COOKIE_MAX_AGE_SECONDS}; HttpOnly; Secure; SameSite=Lax; Path=/`
-  );
-}
-
-function clearStateCookie(res) {
-  res.setHeader(
-    "Set-Cookie",
-    `${COOKIE_NAME}=; Max-Age=0; HttpOnly; Secure; SameSite=Lax; Path=/`
-  );
-}
-
 function escapeHtml(value) {
   return String(value || "")
     .replace(/&/g, "&amp;")
@@ -70,6 +37,39 @@ function escapeHtml(value) {
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&#39;");
+}
+
+function signState(config, payload) {
+  return crypto
+    .createHmac("sha256", config.clientSecret)
+    .update(payload)
+    .digest("base64url");
+}
+
+function createOAuthState(config) {
+  const issuedAt = Date.now().toString(36);
+  const nonce = crypto.randomBytes(18).toString("base64url");
+  const payload = `${issuedAt}.${nonce}`;
+  return `${payload}.${signState(config, payload)}`;
+}
+
+function isValidOAuthState(config, state) {
+  const parts = String(state || "").split(".");
+  if (parts.length !== 3) return false;
+
+  const [issuedAt, nonce, signature] = parts;
+  const issuedAtMs = Number.parseInt(issuedAt, 36);
+  const ageMs = Date.now() - issuedAtMs;
+
+  if (!Number.isFinite(issuedAtMs) || ageMs < -60_000 || ageMs > STATE_MAX_AGE_MS) {
+    return false;
+  }
+
+  const expected = signState(config, `${issuedAt}.${nonce}`);
+  const expectedBuffer = Buffer.from(expected);
+  const actualBuffer = Buffer.from(signature);
+
+  return expectedBuffer.length === actualBuffer.length && crypto.timingSafeEqual(expectedBuffer, actualBuffer);
 }
 
 function htmlPage(title, body, status = 200) {
@@ -216,19 +216,13 @@ async function removeGuildRole(config, userId, roleId) {
 const app = express();
 
 app.get("/", (req, res) => {
-  sendHtml(res, htmlPage("CALFX Verification", `
-    <h1>CALFX Verification</h1>
-    <p>Verify your Discord account to unlock California State Roleplay.</p>
-    <p>Discord will ask you to allow CALFX Management to view your basic profile.</p>
-    <a class="button" href="/start">Verify with Discord</a>
-  `));
+  res.redirect("/start");
 });
 
 app.get("/start", (req, res) => {
   try {
     const config = getConfig();
-    const state = crypto.randomBytes(24).toString("hex");
-    setStateCookie(res, state);
+    const state = createOAuthState(config);
 
     const authorizeUrl = new URL("https://discord.com/oauth2/authorize");
     authorizeUrl.searchParams.set("response_type", "code");
@@ -244,7 +238,7 @@ app.get("/start", (req, res) => {
     sendHtml(res, htmlPage("Verification Setup Needed", `
       <h1>Verification Setup Needed</h1>
       <p>${escapeHtml(error.message || error)}</p>
-      <p>Set the Firebase Function environment variables, then deploy again.</p>
+      <p>Set the Vercel environment variables, then redeploy the project.</p>
     `, 500));
   }
 });
@@ -253,10 +247,8 @@ app.get("/callback", async (req, res) => {
   try {
     const config = getConfig();
     const { code, state } = req.query;
-    const cookieState = parseCookies(req)[COOKIE_NAME];
-    clearStateCookie(res);
 
-    if (!code || !state || !cookieState || state !== cookieState) {
+    if (!code || !state || !isValidOAuthState(config, state)) {
       return sendHtml(res, htmlPage("Verification Failed", `
         <h1>Verification Failed</h1>
         <p>The verification request expired or was opened incorrectly.</p>
