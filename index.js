@@ -2,6 +2,7 @@ const crypto = require("crypto");
 const express = require("express");
 
 const DISCORD_API = "https://discord.com/api/v10";
+const ROBLOX_API = "https://apis.roblox.com/oauth/v1";
 const STATE_MAX_AGE_MS = 10 * 60 * 1000;
 
 function env(name, fallback = "") {
@@ -19,6 +20,14 @@ function requiredSnowflakeEnv(name) {
   const value = requiredEnv(name);
   if (!/^\d{17,20}$/.test(value)) {
     throw new Error(`${name} must be a Discord ID containing only numbers. Current value starts with: ${value.slice(0, 12)}`);
+  }
+  return value;
+}
+
+function optionalNumericEnv(name) {
+  const value = env(name);
+  if (value && !/^\d+$/.test(value)) {
+    throw new Error(`${name} must contain only numbers.`);
   }
   return value;
 }
@@ -57,6 +66,12 @@ function getConfig(req) {
   const publicBaseUrl = normalizeBaseUrl(env("PUBLIC_BASE_URL", fallbackBaseUrl), "PUBLIC_BASE_URL");
   if (!publicBaseUrl) throw new Error("Missing required environment variable: PUBLIC_BASE_URL");
   const redirectUri = `${publicBaseUrl}/callback`;
+  const robloxClientId = optionalNumericEnv("ROBLOX_CLIENT_ID");
+  const robloxClientSecret = env("ROBLOX_CLIENT_SECRET");
+
+  if ((robloxClientId && !robloxClientSecret) || (!robloxClientId && robloxClientSecret)) {
+    throw new Error("Set both ROBLOX_CLIENT_ID and ROBLOX_CLIENT_SECRET, or leave both empty.");
+  }
 
   return {
     clientId: requiredSnowflakeEnv("DISCORD_CLIENT_ID"),
@@ -67,7 +82,10 @@ function getConfig(req) {
     verifiedRoleId: requiredSnowflakeEnv("VERIFIED_ROLE_ID"),
     memberRoleId: requiredSnowflakeEnv("MEMBER_ROLE_ID"),
     redirectUri,
-    publicBaseUrl
+    publicBaseUrl,
+    robloxClientId,
+    robloxClientSecret,
+    robloxRedirectUri: `${publicBaseUrl}/roblox/callback`
   };
 }
 
@@ -99,7 +117,20 @@ function createOAuthState(config) {
   const payload = encodeStatePayload({
     issuedAt: Date.now(),
     nonce: crypto.randomBytes(18).toString("base64url"),
+    flow: "discord",
     redirectUri: config.redirectUri
+  });
+
+  return `${payload}.${signState(config, payload)}`;
+}
+
+function createRobloxOAuthState(config, discordUser) {
+  const payload = encodeStatePayload({
+    issuedAt: Date.now(),
+    nonce: crypto.randomBytes(18).toString("base64url"),
+    flow: "roblox",
+    discordUserId: discordUser.id,
+    discordUsername: discordUser.username
   });
 
   return `${payload}.${signState(config, payload)}`;
@@ -190,6 +221,26 @@ function htmlPage(title, body, status = 200) {
       color: #cbd5e1;
       line-height: 1.55;
     }
+    ul {
+      margin: 0 0 16px 20px;
+      padding: 0;
+      color: #cbd5e1;
+      line-height: 1.55;
+    }
+    li {
+      margin: 0 0 8px;
+    }
+    .links {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+      margin-top: 18px;
+    }
+    .links a {
+      color: #7ddcff;
+      text-decoration: none;
+      font-weight: 700;
+    }
     a.button {
       display: inline-flex;
       align-items: center;
@@ -239,11 +290,105 @@ function retryButtonFromRequest(req) {
 }
 
 function setupList(config) {
+  const robloxStatus = config.robloxClientId
+    ? "Roblox verification is enabled."
+    : "Roblox verification is disabled until ROBLOX_CLIENT_ID and ROBLOX_CLIENT_SECRET are set in Vercel.";
+
   return `
     <p>Use these exact values:</p>
     <p><strong>Bot Verify URL</strong><br><code>${escapeHtml(config.publicBaseUrl)}/start</code></p>
     <p><strong>Discord OAuth2 Redirect</strong><br><code>${escapeHtml(config.redirectUri)}</code></p>
+    <p><strong>Roblox OAuth2 Redirect</strong><br><code>${escapeHtml(config.robloxRedirectUri)}</code></p>
+    <p><strong>Privacy Policy URL</strong><br><code>${escapeHtml(config.publicBaseUrl)}/privacy</code></p>
+    <p><strong>Terms of Service URL</strong><br><code>${escapeHtml(config.publicBaseUrl)}/terms</code></p>
     <p>In Discord Developer Portal, paste the redirect URL exactly under <strong>OAuth2 - Redirects</strong>.</p>
+    <p>In Roblox Creator Dashboard, paste the Roblox redirect URL exactly in your OAuth app redirect URLs.</p>
+    <p>${escapeHtml(robloxStatus)}</p>
+  `;
+}
+
+function policyLinks(config) {
+  return `
+    <div class="links">
+      <a href="${escapeHtml(config.publicBaseUrl)}/start">Verify</a>
+      <a href="${escapeHtml(config.publicBaseUrl)}/privacy">Privacy Policy</a>
+      <a href="${escapeHtml(config.publicBaseUrl)}/terms">Terms of Service</a>
+      <a href="${escapeHtml(config.publicBaseUrl)}/setup">Setup</a>
+    </div>
+  `;
+}
+
+function privacyPolicyBody(config) {
+  return `
+    <h1>Privacy Policy</h1>
+    <p><strong>Effective date:</strong> June 22, 2026</p>
+    <p>CALFX Verification is used by California State Roleplay to verify Discord members and optionally connect their Roblox account for server access.</p>
+
+    <p><strong>Information we collect</strong></p>
+    <ul>
+      <li>Discord account ID, username, avatar, and basic profile information provided by Discord OAuth.</li>
+      <li>Roblox user ID, username, display name, profile link, and avatar information provided by Roblox OAuth when Roblox verification is enabled.</li>
+      <li>Server verification actions, such as roles added, roles removed, and nickname updates.</li>
+    </ul>
+
+    <p><strong>How we use information</strong></p>
+    <ul>
+      <li>To verify that you control the Discord and Roblox accounts used for CALFX access.</li>
+      <li>To remove the Unverified role and add the Verified and CALFX Member roles.</li>
+      <li>To update your Discord server nickname to your Roblox username when Roblox verification is completed.</li>
+      <li>To send you a Discord DM confirming the verification result.</li>
+    </ul>
+
+    <p><strong>What we do not collect</strong></p>
+    <ul>
+      <li>We do not collect your Discord password or Roblox password.</li>
+      <li>We do not read your Discord messages through this verification site.</li>
+      <li>We do not sell your information.</li>
+    </ul>
+
+    <p><strong>Third-party services</strong></p>
+    <p>This service uses Discord OAuth, Roblox OAuth, and Vercel hosting. Their own privacy policies also apply when you authorize through their platforms.</p>
+
+    <p><strong>Data retention</strong></p>
+    <p>The verification site does not intentionally store a permanent database of your OAuth profile. Discord roles, nickname changes, DMs, and temporary hosting logs may remain on Discord, Roblox, or Vercel according to those services' systems.</p>
+
+    <p><strong>Contact</strong></p>
+    <p>For questions or removal requests, contact CALFX Management through the California State Roleplay Discord server.</p>
+    ${policyLinks(config)}
+  `;
+}
+
+function termsBody(config) {
+  return `
+    <h1>Terms of Service</h1>
+    <p><strong>Effective date:</strong> June 22, 2026</p>
+    <p>By using CALFX Verification, you agree to these terms.</p>
+
+    <p><strong>Purpose</strong></p>
+    <p>CALFX Verification is provided to verify Discord server members and optionally connect Roblox account information for California State Roleplay access.</p>
+
+    <p><strong>User requirements</strong></p>
+    <ul>
+      <li>You must use your own Discord and Roblox accounts.</li>
+      <li>You may not impersonate another person or attempt to bypass server moderation.</li>
+      <li>You must follow Discord, Roblox, and California State Roleplay rules while using this service.</li>
+    </ul>
+
+    <p><strong>Permissions</strong></p>
+    <p>When you authorize the service, Discord and Roblox may share basic profile information with CALFX Verification. The bot may update your Discord server roles and nickname as part of verification.</p>
+
+    <p><strong>Availability</strong></p>
+    <p>The service is provided as-is and may be unavailable during maintenance, hosting issues, Discord issues, Roblox issues, or configuration changes.</p>
+
+    <p><strong>Misuse</strong></p>
+    <p>CALFX Management may deny, remove, or review verification access if the service is misused or if account information appears incorrect, unsafe, or abusive.</p>
+
+    <p><strong>Changes</strong></p>
+    <p>These terms may be updated as the verification system changes. Continued use of the service means you accept the updated terms.</p>
+
+    <p><strong>Contact</strong></p>
+    <p>For questions, contact CALFX Management through the California State Roleplay Discord server.</p>
+    ${policyLinks(config)}
   `;
 }
 
@@ -272,6 +417,28 @@ async function discordRequest(path, options = {}) {
   return data;
 }
 
+async function robloxRequest(path, options = {}) {
+  const response = await fetch(`${ROBLOX_API}${path}`, options);
+  const text = await response.text();
+  let data = null;
+
+  try {
+    data = text ? JSON.parse(text) : null;
+  } catch {
+    data = text || null;
+  }
+
+  if (!response.ok) {
+    const apiError = data && typeof data === "object"
+      ? data.error_description || data.error || data.message
+      : data;
+    const message = apiError || response.statusText || "Roblox API request failed";
+    throw new Error(`${message} (${response.status})`);
+  }
+
+  return data;
+}
+
 async function exchangeCodeForToken(config, code) {
   const body = new URLSearchParams({
     client_id: config.clientId,
@@ -288,8 +455,29 @@ async function exchangeCodeForToken(config, code) {
   });
 }
 
+async function exchangeRobloxCodeForToken(config, code) {
+  const body = new URLSearchParams({
+    client_id: config.robloxClientId,
+    client_secret: config.robloxClientSecret,
+    grant_type: "authorization_code",
+    code
+  });
+
+  return robloxRequest("/token", {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body
+  });
+}
+
 async function getDiscordUser(accessToken) {
   return discordRequest("/users/@me", {
+    headers: { Authorization: `Bearer ${accessToken}` }
+  });
+}
+
+async function getRobloxUser(accessToken) {
+  return robloxRequest("/userinfo", {
     headers: { Authorization: `Bearer ${accessToken}` }
   });
 }
@@ -314,6 +502,114 @@ async function removeGuildRole(config, userId, roleId) {
   });
 }
 
+async function updateGuildNickname(config, userId, nickname) {
+  await discordRequest(`/guilds/${config.guildId}/members/${userId}`, {
+    method: "PATCH",
+    headers: {
+      Authorization: `Bot ${config.botToken}`,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({ nick: nickname })
+  });
+}
+
+async function createDmChannel(config, userId) {
+  return discordRequest("/users/@me/channels", {
+    method: "POST",
+    headers: {
+      Authorization: `Bot ${config.botToken}`,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({ recipient_id: userId })
+  });
+}
+
+async function sendDiscordDm(config, userId, content) {
+  const channel = await createDmChannel(config, userId);
+
+  return discordRequest(`/channels/${channel.id}/messages`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bot ${config.botToken}`,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      content,
+      allowed_mentions: { parse: [] }
+    })
+  });
+}
+
+function isRobloxConfigured(config) {
+  return Boolean(config.robloxClientId && config.robloxClientSecret);
+}
+
+function formatList(items) {
+  return items.length ? items.map(item => `- ${item}`).join("\n") : "- None";
+}
+
+async function finalizeVerification(config, discordUser, robloxUser = null) {
+  const rolesAdded = [];
+  const rolesRemoved = [];
+  const warnings = [];
+
+  try {
+    await getGuildMember(config, discordUser.id);
+  } catch (error) {
+    if (String(error.message || "").includes("(404)")) {
+      throw new Error("You need to join the CALFX Discord server before verifying.");
+    }
+
+    throw error;
+  }
+
+  await removeGuildRole(config, discordUser.id, config.unverifiedRoleId)
+    .then(() => rolesRemoved.push("Unverified"))
+    .catch(error => warnings.push(`Could not remove Unverified: ${error.message}`));
+
+  await addGuildRole(config, discordUser.id, config.verifiedRoleId)
+    .then(() => rolesAdded.push("Verified"))
+    .catch(error => {
+      throw new Error(`Could not add the verified role. Check the bot has Manage Roles and its role is above the verified role. Discord said: ${error.message}`);
+    });
+
+  await addGuildRole(config, discordUser.id, config.memberRoleId)
+    .then(() => rolesAdded.push("CALFX Member"))
+    .catch(error => {
+      throw new Error(`Could not add the CALFX Member role. Check the bot has Manage Roles and its role is above the member role. Discord said: ${error.message}`);
+    });
+
+  const robloxUsername = robloxUser?.preferred_username || robloxUser?.name || robloxUser?.nickname || "";
+
+  if (robloxUsername) {
+    await updateGuildNickname(config, discordUser.id, robloxUsername.slice(0, 32))
+      .catch(error => warnings.push(`Could not update nickname to ${robloxUsername}: ${error.message}`));
+  }
+
+  const dmLines = [
+    "You have been verified.",
+    "",
+    "Roles added:",
+    formatList(rolesAdded),
+    "",
+    "Roles removed:",
+    formatList(rolesRemoved)
+  ];
+
+  if (robloxUsername) {
+    dmLines.push("", `Roblox username: ${robloxUsername}`);
+  }
+
+  if (warnings.length) {
+    dmLines.push("", "Notes:", formatList(warnings));
+  }
+
+  await sendDiscordDm(config, discordUser.id, dmLines.join("\n"))
+    .catch(error => console.warn(`Could not DM ${discordUser.id}:`, error.message));
+
+  return { rolesAdded, rolesRemoved, warnings, robloxUsername };
+}
+
 const app = express();
 
 app.get("/", (req, res) => {
@@ -331,6 +627,30 @@ app.get("/setup", (req, res) => {
   } catch (error) {
     return sendHtml(res, htmlPage("Verification Setup Needed", `
       <h1>Verification Setup Needed</h1>
+      <p>${escapeHtml(error.message || error)}</p>
+    `, 500));
+  }
+});
+
+app.get("/privacy", (req, res) => {
+  try {
+    const config = getConfig(req);
+    return sendHtml(res, htmlPage("Privacy Policy", privacyPolicyBody(config)));
+  } catch (error) {
+    return sendHtml(res, htmlPage("Privacy Policy", `
+      <h1>Privacy Policy</h1>
+      <p>${escapeHtml(error.message || error)}</p>
+    `, 500));
+  }
+});
+
+app.get("/terms", (req, res) => {
+  try {
+    const config = getConfig(req);
+    return sendHtml(res, htmlPage("Terms of Service", termsBody(config)));
+  } catch (error) {
+    return sendHtml(res, htmlPage("Terms of Service", `
+      <h1>Terms of Service</h1>
       <p>${escapeHtml(error.message || error)}</p>
     `, 500));
   }
@@ -384,33 +704,31 @@ app.get("/callback", async (req, res) => {
     const token = await exchangeCodeForToken(config, String(code));
     const user = await getDiscordUser(token.access_token);
 
-    try {
-      await getGuildMember(config, user.id);
-    } catch (error) {
-      if (String(error.message || "").includes("(404)")) {
-        return sendHtml(res, htmlPage("Verification Failed", `
-          <h1>Verification Failed</h1>
-          <p>You need to join the CALFX Discord server before verifying.</p>
-          ${retryButton(config)}
-        `, 400));
-      }
+    if (isRobloxConfigured(config)) {
+      const robloxState = createRobloxOAuthState(config, {
+        id: user.id,
+        username: user.username
+      });
 
-      throw error;
+      const authorizeUrl = new URL(`${ROBLOX_API}/authorize`);
+      authorizeUrl.searchParams.set("client_id", config.robloxClientId);
+      authorizeUrl.searchParams.set("redirect_uri", config.robloxRedirectUri);
+      authorizeUrl.searchParams.set("scope", "openid profile");
+      authorizeUrl.searchParams.set("response_type", "code");
+      authorizeUrl.searchParams.set("state", robloxState);
+      authorizeUrl.searchParams.set("nonce", crypto.randomBytes(18).toString("base64url"));
+      authorizeUrl.searchParams.set("prompt", "consent");
+
+      return res.redirect(authorizeUrl.toString());
     }
 
-    await removeGuildRole(config, user.id, config.unverifiedRoleId).catch(error => {
-      console.warn(`Could not remove unverified role from ${user.id}:`, error.message);
-    });
-    await addGuildRole(config, user.id, config.verifiedRoleId).catch(error => {
-      throw new Error(`Could not add the verified role. Check the bot has Manage Roles and its role is above the verified role. Discord said: ${error.message}`);
-    });
-    await addGuildRole(config, user.id, config.memberRoleId).catch(error => {
-      throw new Error(`Could not add the CALFX Member role. Check the bot has Manage Roles and its role is above the member role. Discord said: ${error.message}`);
-    });
+    const result = await finalizeVerification(config, user);
 
     return sendHtml(res, htmlPage("Verified", `
       <h1>Verification Complete</h1>
       <p>You are verified as <strong>${escapeHtml(user.username)}</strong>.</p>
+      <p>Roles added: ${escapeHtml(result.rolesAdded.join(", ") || "None")}</p>
+      <p>Roles removed: ${escapeHtml(result.rolesRemoved.join(", ") || "None")}</p>
       <p>You can return to Discord now.</p>
     `));
   } catch (error) {
@@ -419,6 +737,53 @@ app.get("/callback", async (req, res) => {
       <h1>Verification Failed</h1>
       <p>${escapeHtml(error.message || error)}</p>
       <p>Make sure you are in the CALFX Discord server and the bot role is above the verification roles.</p>
+      ${retryButtonFromRequest(req)}
+    `, 500));
+  }
+});
+
+app.get("/roblox/callback", async (req, res) => {
+  try {
+    const config = getConfig(req);
+
+    if (!isRobloxConfigured(config)) {
+      throw new Error("Roblox OAuth is not configured. Set ROBLOX_CLIENT_ID and ROBLOX_CLIENT_SECRET in Vercel.");
+    }
+
+    const { code, state } = req.query;
+    const stateData = readOAuthState(config, state);
+
+    if (!code || !stateData || stateData.flow !== "roblox" || !stateData.discordUserId) {
+      return sendHtml(res, htmlPage("Verification Failed", `
+        <h1>Verification Failed</h1>
+        <p>The Roblox verification request expired or was opened incorrectly.</p>
+        ${retryButton(config)}
+      `, 400));
+    }
+
+    const token = await exchangeRobloxCodeForToken(config, String(code));
+    const robloxUser = await getRobloxUser(token.access_token);
+    const discordUser = {
+      id: stateData.discordUserId,
+      username: stateData.discordUsername || "Discord user"
+    };
+    const result = await finalizeVerification(config, discordUser, robloxUser);
+
+    return sendHtml(res, htmlPage("Verified", `
+      <h1>Verification Complete</h1>
+      <p>You are verified with Discord and Roblox.</p>
+      <p>Roblox username: <strong>${escapeHtml(result.robloxUsername || "Unknown")}</strong></p>
+      <p>Roles added: ${escapeHtml(result.rolesAdded.join(", ") || "None")}</p>
+      <p>Roles removed: ${escapeHtml(result.rolesRemoved.join(", ") || "None")}</p>
+      <p>You can close this tab now.</p>
+      <script>setTimeout(() => window.close(), 3500);</script>
+    `));
+  } catch (error) {
+    console.error("Roblox verification callback failed:", error);
+    return sendHtml(res, htmlPage("Verification Failed", `
+      <h1>Verification Failed</h1>
+      <p>${escapeHtml(error.message || error)}</p>
+      <p>Make sure the Roblox OAuth redirect in Creator Dashboard exactly matches the setup page.</p>
       ${retryButtonFromRequest(req)}
     `, 500));
   }
