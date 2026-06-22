@@ -717,7 +717,7 @@ app.get("/callback", async (req, res) => {
       authorizeUrl.searchParams.set("response_type", "code");
       authorizeUrl.searchParams.set("state", robloxState);
       authorizeUrl.searchParams.set("nonce", crypto.randomBytes(18).toString("base64url"));
-      authorizeUrl.searchParams.set("prompt", "select_account");
+      authorizeUrl.searchParams.set("prompt", "select_account consent");
 
       return res.redirect(authorizeUrl.toString());
     }
