@@ -24,7 +24,6 @@ Use these environment variables in Vercel:
 
 ```env
 PUBLIC_BASE_URL=https://YOUR_VERCEL_PROJECT.vercel.app
-DISCORD_REDIRECT_URI=https://YOUR_VERCEL_PROJECT.vercel.app/callback
 DISCORD_CLIENT_ID=your_discord_application_client_id
 DISCORD_CLIENT_SECRET=your_discord_application_client_secret
 DISCORD_BOT_TOKEN=your_bot_token
@@ -42,6 +41,12 @@ Add this exact redirect URL:
 https://YOUR_VERCEL_PROJECT.vercel.app/callback
 ```
 
+You can open this page after deployment to see the exact values:
+
+```txt
+https://YOUR_VERCEL_PROJECT.vercel.app/setup
+```
+
 The OAuth scope is:
 
 ```txt
@@ -53,10 +58,12 @@ identify
 Set this in your Discord bot hosting environment:
 
 ```env
-DISCORD_VERIFY_URL=https://YOUR_VERCEL_PROJECT.vercel.app/start
+DISCORD_VERIFY_URL=https://YOUR_VERCEL_PROJECT.vercel.app
 ```
 
 Restart the bot after changing it.
+
+Do not set `DISCORD_REDIRECT_URI` in Vercel. The site builds the callback URL from `PUBLIC_BASE_URL`.
 
 ## Important Permissions
 
