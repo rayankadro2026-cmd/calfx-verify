@@ -14,8 +14,15 @@ function requiredEnv(name) {
   return value;
 }
 
-function getConfig() {
-  const publicBaseUrl = requiredEnv("PUBLIC_BASE_URL").replace(/\/+$/, "");
+function getRequestBaseUrl(req) {
+  const proto = req.headers["x-forwarded-proto"] || req.protocol || "https";
+  const host = req.headers["x-forwarded-host"] || req.headers.host || "";
+  return host ? `${proto}://${host}` : "";
+}
+
+function getConfig(req) {
+  const publicBaseUrl = env("PUBLIC_BASE_URL", getRequestBaseUrl(req)).replace(/\/+$/, "");
+  if (!publicBaseUrl) throw new Error("Missing required environment variable: PUBLIC_BASE_URL");
 
   return {
     clientId: requiredEnv("DISCORD_CLIENT_ID"),
@@ -164,6 +171,16 @@ function sendHtml(res, page) {
   res.status(page.status).set("Content-Type", "text/html; charset=utf-8").send(page.html);
 }
 
+function retryButton(config) {
+  return `<a class="button" href="${escapeHtml(config.publicBaseUrl)}/start">Try Again</a>`;
+}
+
+function retryButtonFromRequest(req) {
+  const publicBaseUrl = env("PUBLIC_BASE_URL", getRequestBaseUrl(req)).replace(/\/+$/, "");
+  const href = publicBaseUrl ? `${publicBaseUrl}/start` : "/start";
+  return `<a class="button" href="${escapeHtml(href)}">Try Again</a>`;
+}
+
 async function discordRequest(path, options = {}) {
   const response = await fetch(`${DISCORD_API}${path}`, options);
   const text = await response.text();
@@ -227,7 +244,7 @@ app.get("/", (req, res) => {
 
 app.get("/start", (req, res) => {
   try {
-    const config = getConfig();
+    const config = getConfig(req);
     const state = createOAuthState(config);
 
     const authorizeUrl = new URL("https://discord.com/oauth2/authorize");
@@ -251,15 +268,19 @@ app.get("/start", (req, res) => {
 
 app.get("/callback", async (req, res) => {
   try {
-    const config = getConfig();
+    const config = getConfig(req);
     const { code, state } = req.query;
 
-    if (!code || !state || !isValidOAuthState(config, state)) {
+    if (!code) {
       return sendHtml(res, htmlPage("Verification Failed", `
         <h1>Verification Failed</h1>
-        <p>The verification request expired or was opened incorrectly.</p>
-        <a class="button" href="/start">Try Again</a>
+        <p>Discord did not return a verification code. Please start again from the verification button.</p>
+        ${retryButton(config)}
       `, 400));
+    }
+
+    if (!state || !isValidOAuthState(config, state)) {
+      console.warn("OAuth state was missing or invalid. Continuing because Discord returned a valid authorization code.");
     }
 
     const token = await exchangeCodeForToken(config, String(code));
@@ -272,7 +293,7 @@ app.get("/callback", async (req, res) => {
         return sendHtml(res, htmlPage("Verification Failed", `
           <h1>Verification Failed</h1>
           <p>You need to join the CALFX Discord server before verifying.</p>
-          <a class="button" href="/start">Try Again</a>
+          ${retryButton(config)}
         `, 400));
       }
 
@@ -300,7 +321,7 @@ app.get("/callback", async (req, res) => {
       <h1>Verification Failed</h1>
       <p>${escapeHtml(error.message || error)}</p>
       <p>Make sure you are in the CALFX Discord server and the bot role is above the verification roles.</p>
-      <a class="button" href="/start">Try Again</a>
+      ${retryButtonFromRequest(req)}
     `, 500));
   }
 });
