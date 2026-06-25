@@ -75,12 +75,17 @@ Use these URLs if Roblox asks for app links:
 Entry Link:
 https://YOUR_VERCEL_PROJECT.vercel.app
 
+Roblox OAuth Review/Test Link:
+https://YOUR_VERCEL_PROJECT.vercel.app/roblox/start
+
 Privacy Policy URL:
 https://YOUR_VERCEL_PROJECT.vercel.app/privacy
 
 Terms of Service URL:
 https://YOUR_VERCEL_PROJECT.vercel.app/terms
 ```
+
+Use the root URL as the Roblox app entry link. It opens a public landing page with a clear Start Verification button, Privacy Policy, Terms of Service, and a Roblox OAuth Test button for reviewers. Do not use `/start`, `/callback`, or `/roblox/callback` as the app entry link.
 
 Put the Roblox OAuth client ID and secret into Vercel as `ROBLOX_CLIENT_ID` and `ROBLOX_CLIENT_SECRET`. If those two variables are not set, the site will still complete Discord verification without Roblox.
 
