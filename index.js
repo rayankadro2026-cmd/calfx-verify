@@ -520,6 +520,38 @@ async function getGuildMember(config, userId) {
   });
 }
 
+function wait(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function isDiscordNotFound(error) {
+  const message = String(error?.message || "");
+  return message.includes("(404)") || message.toLowerCase().includes("unknown member");
+}
+
+async function getGuildMemberWithRetry(config, userId) {
+  const attempts = Math.min(Math.max(Number.parseInt(env("DISCORD_MEMBER_LOOKUP_ATTEMPTS", "14"), 10) || 14, 1), 25);
+  const delayMs = Math.min(Math.max(Number.parseInt(env("DISCORD_MEMBER_LOOKUP_DELAY_MS", "600"), 10) || 600, 250), 1500);
+  let lastError = null;
+
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      return await getGuildMember(config, userId);
+    } catch (error) {
+      lastError = error;
+
+      if (!isDiscordNotFound(error) || attempt === attempts) {
+        break;
+      }
+
+      console.warn(`Discord has not shown member ${userId} in guild ${config.guildId} yet. Retry ${attempt}/${attempts}.`);
+      await wait(delayMs);
+    }
+  }
+
+  throw lastError;
+}
+
 async function addGuildRole(config, userId, roleId) {
   await discordRequest(`/guilds/${config.guildId}/members/${userId}/roles/${roleId}`, {
     method: "PUT",
@@ -586,10 +618,10 @@ async function finalizeVerification(config, discordUser, robloxUser = null) {
   const warnings = [];
 
   try {
-    await getGuildMember(config, discordUser.id);
+    await getGuildMemberWithRetry(config, discordUser.id);
   } catch (error) {
-    if (String(error.message || "").includes("(404)")) {
-      throw new Error("You need to join the CALFX Discord server before verifying.");
+    if (isDiscordNotFound(error)) {
+      throw new Error("Discord still cannot see you in the CALFX server yet. If you just joined, wait a few seconds and press Try Again. Make sure you authorized with the same Discord account that joined the server.");
     }
 
     throw error;
