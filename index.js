@@ -85,7 +85,9 @@ function getConfig(req) {
     publicBaseUrl,
     robloxClientId,
     robloxClientSecret,
-    robloxRedirectUri: `${publicBaseUrl}/roblox/callback`
+    robloxRedirectUri: `${publicBaseUrl}/roblox/callback`,
+    portalVerificationWebhookUrl: env("PORTAL_VERIFICATION_WEBHOOK_URL"),
+    portalVerificationWebhookSecret: env("VERIFICATION_LINK_SECRET")
   };
 }
 
@@ -514,6 +516,30 @@ async function getRobloxUser(accessToken) {
   });
 }
 
+async function sendPortalVerificationLink(config, discordUser, robloxUser, robloxUsername) {
+  if (!config.portalVerificationWebhookUrl || !config.portalVerificationWebhookSecret || !robloxUsername) return;
+
+  const response = await fetch(config.portalVerificationWebhookUrl, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "x-calfx-secret": config.portalVerificationWebhookSecret
+    },
+    body: JSON.stringify({
+      discordId: discordUser.id,
+      discordUsername: discordUser.username,
+      discordDisplayName: discordUser.global_name || discordUser.username,
+      robloxId: robloxUser?.sub || robloxUser?.id || "",
+      robloxUsername
+    })
+  });
+
+  if (!response.ok) {
+    const text = await response.text().catch(() => "");
+    throw new Error(`Portal verification link failed (${response.status}) ${text}`.trim());
+  }
+}
+
 async function getGuildMember(config, userId) {
   return discordRequest(`/guilds/${config.guildId}/members/${userId}`, {
     headers: { Authorization: `Bot ${config.botToken}` }
@@ -648,6 +674,9 @@ async function finalizeVerification(config, discordUser, robloxUser = null) {
   if (robloxUsername) {
     await updateGuildNickname(config, discordUser.id, robloxUsername.slice(0, 32))
       .catch(error => warnings.push(`Could not update nickname to ${robloxUsername}: ${error.message}`));
+
+    await sendPortalVerificationLink(config, discordUser, robloxUser, robloxUsername)
+      .catch(error => warnings.push(`Could not sync Roblox link to CALFX Networks: ${error.message}`));
   }
 
   const dmFields = [
